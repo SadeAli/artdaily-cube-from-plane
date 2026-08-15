@@ -281,31 +281,49 @@
   /* the perfect zone for the hand in play, on this sheet */
   function tolFor(faceDiagPx) { return perfectZone(faceDiagPx, ease, COARSE); }
 
-  /* ---- theme-aware inks (re-read on every repaint) ---- */
+  /* ---- theme-aware inks ----
+     Every ink is a custom property on :root and the ONLY thing that moves
+     them is the data-theme attribute (see css/style.css), so reading them
+     once per theme gives the same answer as reading them once per repaint
+     — minus a forced style recalculation, and an accent colour mix, on
+     every pointermove of every drag. An empty read (stylesheet not parsed
+     yet) is never cached, so a cold boot corrects itself next frame. */
+  var inkCache = null, inkTheme = '';
   function inks() {
+    var t = ArtDaily.theme();
+    if (inkCache && inkTheme === t) return inkCache;
     var cs = getComputedStyle(document.documentElement);
     var ink = cs.getPropertyValue('--ink').trim();
     var accent = cs.getPropertyValue('--game-accent').trim() || cs.getPropertyValue('--mint').trim();
-    return {
+    var c = {
       ink: ink,
       muted: cs.getPropertyValue('--muted').trim(),
       accent: accent,
       /* accent inked toward graphite — AA on both papers where raw accent isn't */
       accentInk: mixHex(accent, ink, 0.55),
     };
+    if (c.ink && c.muted) { inkCache = c; inkTheme = t; }
+    return c;
   }
 
-  /* ---- crisp canvas at any devicePixelRatio; height tracks width ---- */
-  var W = 0, H = 0;
+  /* ---- crisp canvas at any devicePixelRatio; height tracks width ----
+     Assigning canvas.width BLANKS the sheet, so it is only assigned when
+     something really moved: a phone fires `resize` on every pixel of
+     address-bar slide, at an unchanged width, and each one used to
+     reallocate the backing store and redraw the whole cube. */
+  var W = 0, H = 0, fitDpr = 0;
   function fitCanvas() {
     var rect = canvas.getBoundingClientRect();
-    W = Math.max(1, Math.round(rect.width));
-    H = Math.round(W * ASPECT);
+    var w = Math.max(1, Math.round(rect.width));
+    var h = Math.round(w * ASPECT);
     var dpr = window.devicePixelRatio || 1;
+    if (w === W && h === H && dpr === fitDpr) return false;
+    W = w; H = h; fitDpr = dpr;
     canvas.width = Math.round(W * dpr);
     canvas.height = Math.round(H * dpr);
     canvas.style.height = H + 'px';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return true;
   }
 
   function px(pt) { return { x: pt.x * W, y: pt.y * H }; }
@@ -391,7 +409,26 @@
     }
   }
 
+  /* ---- repaint scheduling ----
+     A trackpad or a pen hands over positions faster than the screen shows
+     them. Repainting synchronously inside every pointermove redrew the
+     whole cube — two vanishing points, every edge, the ghosts, the labels
+     — several times inside one displayed frame, and only the last of those
+     was ever seen. draw() now just ASKS for the next frame; paint() runs
+     once, right before the browser composites. */
+  var rafId = 0;
   function draw() {
+    if (rafId) return;
+    rafId = requestAnimationFrame(function () { rafId = 0; paint(); });
+  }
+  /* for paths that must not show a blank frame — a resize has already
+     cleared the sheet, so it repaints on the spot */
+  function paintNow() {
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+    paint();
+  }
+
+  function paint() {
     var c = inks();
     ctx.clearRect(0, 0, W, H);
     var item = items[idx];
@@ -737,12 +774,20 @@
     btnHow.setAttribute('aria-expanded', String(!howTo.hidden));
   });
 
-  ArtDaily.onTheme(draw);
+  ArtDaily.onTheme(function () { inkCache = null; paintNow(); });
   /* the hardware can change mid-session (a laptop user plugs in a tablet);
      the reach and the perfect zone follow it */
   ArtDaily.onInput(draw);
-  /* geometry is stored normalized, so a resize just rescales the sheet */
-  window.addEventListener('resize', function () { fitCanvas(); draw(); });
+  /* geometry is stored normalized, so a resize just rescales the sheet —
+     and a resize that changed nothing does not even do that */
+  var resizeRaf = 0;
+  window.addEventListener('resize', function () {
+    if (resizeRaf) return;
+    resizeRaf = requestAnimationFrame(function () {
+      resizeRaf = 0;
+      if (fitCanvas()) paintNow();
+    });
+  });
 
   /* ---- boot ---- */
   fitCanvas();
