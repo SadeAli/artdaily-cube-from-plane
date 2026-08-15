@@ -18,16 +18,30 @@
   var SLUG = 'cube-from-plane';
   var ITEMS_PER_ROUND = 3;
   var HANDLE_R = 11;    /* drawn radius */
-  var HIT_R = 26;       /* grab radius → 52px touch target */
+  var HIT_BASE = 26;    /* grab radius before ArtDaily.startRadius opens it */
   var ASPECT = 0.62;    /* canvas height / width — fitCanvas enforces it */
-  /* Placement within 1.5% of the face diagonal counts as perfect, so a
-     careful hand can genuinely reach 100. Fingers are wider than mouse
-     cursors and phones have no arrow keys, so touch rounds get a 3.5%
-     perfect-zone — 100 stays reachable by hand there too. Mean error
-     of 30% scores 0. */
+  /* Placement within 1.5% of the face diagonal counts as perfect on a pen,
+     the reference hand. Every other hand gets that zone opened by
+     ArtDaily.ease() — a mouse pivots at the wrist and cannot creep the way
+     a nib can — and it is floored in PIXELS, because a relative tolerance
+     silently halves on a phone: 1.5% of a 140px phone face diagonal is
+     2.1px, below the input device's own noise, while the same rule on a
+     690px sheet is a comfortable 3.1px. Mean error of 30% still scores 0
+     on every device: the ramp is judgement, only the perfect zone is
+     hardware. */
   var ERR_TOL = 0.015;
-  var ERR_TOL_TOUCH = 0.035;
   var ERR_ZERO = 0.30;
+  var SLOP_PX = 4;         /* hand slop floor, eased per mode */
+  var SLOP_COARSE_PX = 9;  /* …and never below a fingertip on a coarse screen */
+
+  /* The perfect zone for this hand on this sheet, as a fraction of the
+     face diagonal. Pure: ease and coarse are injected. */
+  function perfectZone(faceDiagPx, ease, coarse) {
+    var px = Math.max(ease(SLOP_PX), coarse ? SLOP_COARSE_PX : 0);
+    var rel = ease(ERR_TOL);
+    if (!(faceDiagPx > 0)) return rel;
+    return Math.max(rel, px / faceDiagPx);
+  }
 
   /* ================= pure math (unit-testable) =================
      Points are {x, y} in normalized sheet space (x, y in 0..1; VPs
@@ -113,15 +127,17 @@
   }
 
   /* every visible corner on-sheet with margin, back edge clear of the
-     horizon, left face wide enough to read as a square */
-  function cubeFits(b) {
+     horizon, left face wide enough to read as a square. minW is a floor
+     on that width in NORMALIZED units — the caller raises it on a narrow
+     sheet so the given face never shrinks below a readable pixel size. */
+  function cubeFits(b, minW) {
     var pts = [b.Fb, b.Ft, b.Lb, b.Lt, b.Rb, b.Rt, b.Bt], i, p;
     for (i = 0; i < pts.length; i++) {
       p = pts[i];
       if (p.x < 0.05 || p.x > 0.95 || p.y < 0.04 || p.y > 0.97) return false;
     }
     if (b.Bt.y < b.hy + 0.04) return false;
-    if (b.Lb.x > b.Fb.x - 0.09) return false;
+    if (b.Lb.x > b.Fb.x - (minW > 0 ? minW : 0.09)) return false;
     return true;
   }
 
@@ -133,11 +149,11 @@
     { hy: 0.26, vlx: -1.5, vrx: 0.95, u0: 0.45, fx: 0.40, fyb: 0.88, h: 0.44 },
   ];
 
-  function genCube(i, rnd) {
+  function genCube(i, rnd, minW) {
     var tries, box;
     for (tries = 0; tries < 40; tries++) {
       box = makeCube(sampleCam(i, rnd));
-      if (box && cubeFits(box)) return box;
+      if (box && cubeFits(box, minW)) return box;
     }
     return makeCube(FALLBACK_CAMS[i]);
   }
@@ -181,14 +197,18 @@
      has room, and if even that lands short it falls back to the farthest
      sheet corner — which always clears the floor, since the face diagonal
      is shorter than the sheet's. */
-  function ghostSpots(truthPx, diagPx, w, hgt, rnd) {
-    var out = [], i, g, tries, a, m, j, minSep, best, bestQ, cx, cy, cl, k, cor, cand;
-    var floor = GHOST_MIN * diagPx;
+  function ghostSpots(truthPx, diagPx, w, hgt, rnd, tol) {
+    var out = [], i, g, tries, a, m, j, minSep, best, bestQ, cx, cy, cl, k, cor, cand, push;
+    /* The whole perfect zone is added on top of the floor, so opening that
+       zone for a hand can never turn "press done without touching
+       anything" into free points: zero effort still lands 0–17. */
+    var lo = GHOST_MIN + (tol > 0 ? tol : 0), hi = GHOST_MAX + (tol > 0 ? tol : 0);
+    var floor = lo * diagPx;
     for (i = 0; i < truthPx.length; i++) {
       best = null; bestQ = -Infinity;
       for (tries = 0; tries < 24; tries++) {
         a = rnd(0, Math.PI * 2);
-        m = rnd(GHOST_MIN, GHOST_MAX) * diagPx;
+        m = rnd(lo, hi) * diagPx;
         g = {
           x: clamp(truthPx[i].x + Math.cos(a) * m, 16, w - 16),
           y: clamp(truthPx[i].y + Math.sin(a) * m, 16, hgt - 16),
@@ -203,9 +223,11 @@
         cx = w / 2 - truthPx[i].x; cy = hgt / 2 - truthPx[i].y;
         cl = Math.hypot(cx, cy);
         if (!(cl > 1e-6)) { cx = 1; cy = 0; cl = 1; } /* dead centre: any way out will do */
+        /* the push has to clear the floor the perfect zone just raised */
+        push = Math.max(GHOST_PUSH, lo + 0.03) * diagPx;
         best = {
-          x: clamp(truthPx[i].x + (cx / cl) * GHOST_PUSH * diagPx, 16, w - 16),
-          y: clamp(truthPx[i].y + (cy / cl) * GHOST_PUSH * diagPx, 16, hgt - 16),
+          x: clamp(truthPx[i].x + (cx / cl) * push, 16, w - 16),
+          y: clamp(truthPx[i].y + (cy / cl) * push, 16, hgt - 16),
         };
       }
       if (dist(best, truthPx[i]) < floor) {
@@ -236,7 +258,28 @@
 
   /* surface the keyboard scheme only where a keyboard is plausible */
   var KEYS_HINT = !!(window.matchMedia && window.matchMedia('(any-pointer: fine)').matches);
-  var HANDLE_NAMES = ['far-bottom', 'far-top', 'top-back'];
+  var COARSE = (function () {
+    try { return window.matchMedia('(pointer: coarse)').matches; } catch (e) { return false; }
+  })();
+  /* the dots are numbered on the sheet, so feedback can point at one */
+  var HANDLE_NAMES = ['dot 1 (far bottom)', 'dot 2 (far top)', 'dot 3 (top back)'];
+
+  /* First-ever visit: two boxes, not three. Three boxes × three dots is
+     2–3 minutes before a single reported number, which is a long time to
+     ask of someone deciding whether this is for them. */
+  var FIRST_VISIT = ArtDaily.best() === null;
+  var itemsThisRound = ITEMS_PER_ROUND;
+
+  function ease(v) { return ArtDaily.ease(v); }
+
+  /* Grab reach. A screenless pen tablet acquires this target blind — the
+     hand is out of sight — so ArtDaily.startRadius gives it the widest
+     zone; a coarse pointer never drops below the 44px the sheet's own CSS
+     enforces for buttons. */
+  function hitR() { return Math.max(ArtDaily.startRadius(HIT_BASE), COARSE ? 24 : 20); }
+
+  /* the perfect zone for the hand in play, on this sheet */
+  function tolFor(faceDiagPx) { return perfectZone(faceDiagPx, ease, COARSE); }
 
   /* ---- theme-aware inks (re-read on every repaint) ---- */
   function inks() {
@@ -275,20 +318,22 @@
   function rnd(lo, hi) { return lo + Math.random() * (hi - lo); }
 
   function newItem(i) {
-    var box = genCube(i, rnd);
+    /* on a narrow sheet the given face must stay wide enough to read: 46px
+       of it, whatever the canvas is */
+    var box = genCube(i, rnd, Math.max(0.09, 46 / Math.max(1, W)));
     var truthPx = [px(box.Rb), px(box.Rt), px(box.Bt)];
     var diagPx = dist(px(box.Fb), px(box.Lt));
-    var ghosts = ghostSpots(truthPx, diagPx, W, H, rnd);
+    var ghosts = ghostSpots(truthPx, diagPx, W, H, rnd, tolFor(diagPx));
     return {
       box: box,
       /* handle order: 0 far-bottom (Rb), 1 far-top (Rt), 2 top-back (Bt) */
       place: ghosts.map(function (g) { return { x: g.x / W, y: g.y / H }; }),
       phase: 'edit',
-      touch: false, /* did a finger drag this box? → wider perfect-zone */
     };
   }
 
   function newRound() {
+    var k;
     round += 1;
     idx = 0;
     scores = [];
@@ -302,20 +347,49 @@
     }
     dragPointer = null;
     dragIdx = -1;
-    items = [newItem(0), newItem(1), newItem(2)];
+    itemsThisRound = (FIRST_VISIT && round === 1) ? 2 : ITEMS_PER_ROUND;
+    items = [];
+    for (k = 0; k < itemsThisRound; k++) items.push(newItem(k));
     hudRound.textContent = String(round);
     hudScore.textContent = '–';
     btnDone.hidden = false;
     btnDone.textContent = 'done ✓';
     /* one primary CTA while a round is live: done */
     btnRound.classList.remove('btn-primary');
-    hint.textContent = 'box 1/' + ITEMS_PER_ROUND +
-      ' — drag the 3 dots so every edge aims at its vanishing point on the eye line (both VPs sit past the sheet edges), then press done.';
+    /* verbs, not nouns: "vanishing point" is what the reveal DRAWS, so the
+       picture gets to define it. The first screen just says what to do. */
+    hint.textContent = 'box 1/' + itemsThisRound +
+      ' — drag dots 1·2·3 until the box looks solid: each edge you move should aim ' +
+      'off toward the same far-off point as the matching edge of the face already drawn. ' +
+      'press near a dot and it still picks it up.';
     draw();
   }
 
   /* ---- painting (canvas bg stays clear so the CSS dot-grid shows) ---- */
   function seg(a, b) { ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); }
+
+  /* An × where a vanishing point is on the sheet, a chevron at the sheet
+     edge (on the horizon) where it lies beyond. */
+  function drawVpMark(c, v, hyPx, label) {
+    ctx.strokeStyle = c.accentInk;
+    ctx.fillStyle = c.accentInk;
+    ctx.lineWidth = 1.5;
+    ctx.font = '10px ui-monospace, Menlo, Consolas, monospace';
+    if (v.x >= 6 && v.x <= W - 6) {
+      seg({ x: v.x - 5, y: v.y - 5 }, { x: v.x + 5, y: v.y + 5 });
+      seg({ x: v.x - 5, y: v.y + 5 }, { x: v.x + 5, y: v.y - 5 });
+      ctx.textAlign = 'left';
+      ctx.fillText(label, v.x + 8, v.y + 13);
+    } else {
+      var right = v.x > W - 6;
+      var ex = right ? W - 8 : 8, dir = right ? 1 : -1;
+      seg({ x: ex - dir * 7, y: hyPx - 4 }, { x: ex, y: hyPx });
+      seg({ x: ex, y: hyPx }, { x: ex - dir * 7, y: hyPx + 4 });
+      ctx.textAlign = right ? 'right' : 'left';
+      ctx.fillText(right ? label + ' →' : '← ' + label, ex - dir * 10, hyPx + 13);
+      ctx.textAlign = 'left';
+    }
+  }
 
   function draw() {
     var c = inks();
@@ -354,27 +428,25 @@
       seg(tRb, vpr); seg(tRt, vpr);
       seg(tBt, vpr); seg(tBt, vpl);
       ctx.globalAlpha = 1;
-      /* VP marks: an × where a VP is on the sheet, a chevron at the
-         sheet edge (on the horizon) where it lies beyond */
-      [vpl, vpr].forEach(function (v) {
-        ctx.strokeStyle = c.accentInk;
-        ctx.fillStyle = c.accentInk;
-        ctx.lineWidth = 1.5;
-        ctx.font = '10px ui-monospace, Menlo, Consolas, monospace';
-        if (v.x >= 6 && v.x <= W - 6) {
-          seg({ x: v.x - 5, y: v.y - 5 }, { x: v.x + 5, y: v.y + 5 });
-          seg({ x: v.x - 5, y: v.y + 5 }, { x: v.x + 5, y: v.y - 5 });
-          ctx.fillText('vp', v.x + 8, v.y + 13);
-        } else {
-          var right = v.x > W - 6;
-          var ex = right ? W - 8 : 8, dir = right ? 1 : -1;
-          seg({ x: ex - dir * 7, y: hyPx - 4 }, { x: ex, y: hyPx });
-          seg({ x: ex, y: hyPx }, { x: ex - dir * 7, y: hyPx + 4 });
-          ctx.textAlign = right ? 'right' : 'left';
-          ctx.fillText(right ? 'vp →' : '← vp', ex - dir * 10, hyPx + 13);
-          ctx.textAlign = 'left';
-        }
-      });
+      [vpl, vpr].forEach(function (v) { drawVpMark(c, v, hyPx, 'vp'); });
+    } else {
+      /* Teach the vanishing point BEFORE the first done press, with a
+         picture rather than a word: the two edges of the face you were
+         GIVEN, extended until they meet. The reveal draws exactly this for
+         the dots you place; showing one of them up front is what turns
+         "aim at its vanishing point" from jargon into something visible.
+         It gives nothing away — this is the other VP from the one the
+         dots hang off. */
+      ctx.save();
+      ctx.strokeStyle = c.accentInk;
+      ctx.globalAlpha = 0.22;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 5]);
+      seg(Lb, vpl); seg(Lt, vpl);
+      ctx.restore();
+      /* full alpha: accentInk is the AA-safe weight on both papers, and a
+         label that teaches the drill's central term must be readable */
+      drawVpMark(c, vpl, hyPx, 'these edges aim here');
     }
 
     /* the given front-left face, lightly shaded */
@@ -427,6 +499,14 @@
         ctx.stroke();
         ctx.fillStyle = c.ink;
         ctx.beginPath(); ctx.arc(p.x, p.y, 2, 0, Math.PI * 2); ctx.fill();
+        /* numbered on the sheet for everyone, not only where a keyboard is
+           plausible: the feedback line names the dot it blames, and the
+           player has to be able to see which one that is. */
+        ctx.font = '700 11px ui-monospace, Menlo, Consolas, monospace';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(String(i + 1), p.x + HANDLE_R + 3, p.y);
+        ctx.textBaseline = 'alphabetic';
         if (i === activeHandle) {
           ctx.strokeStyle = c.accentInk;
           ctx.globalAlpha = 0.5;
@@ -459,29 +539,62 @@
   }
 
   var dragPointer = null, dragIdx = -1, dragOff = { x: 0, y: 0 };
+  var dragType = '', lastPenAt = 0;
+
+  /* Palm rejection. pointerId guarding alone only rejects the SECOND
+     contact — on a tablet the palm usually lands FIRST — so a pen press
+     takes the sheet off a touch that is mid-drag, and a touch press is
+     ignored for a moment after any pen. */
+  function palmBlocked(ev) {
+    return ev.pointerType === 'touch' && lastPenAt && (Date.now() - lastPenAt) < 1200;
+  }
 
   canvas.addEventListener('pointerdown', function (ev) {
     var item = items[idx];
-    if (roundOver || !item || item.phase !== 'edit' || dragPointer !== null) return;
+    if (roundOver || !item || item.phase !== 'edit') return;
+    if (ev.pointerType === 'pen') lastPenAt = Date.now();
+    if (palmBlocked(ev)) return;
+    if (dragPointer !== null) {
+      if (!(ev.pointerType === 'pen' && dragType === 'touch')) return;
+      try { canvas.releasePointerCapture(dragPointer); } catch (e) {}
+      dragPointer = null;
+      dragIdx = -1;
+    }
     ev.preventDefault();
     /* preventDefault suppresses click-to-focus; restore it so the
        keyboard nudges work right after a grab */
     try { canvas.focus({ preventScroll: true }); } catch (e) { canvas.focus(); }
     var p = pointerPos(ev);
-    var bestI = -1, bestD = HIT_R, i, d;
+    var reach = hitR();
+    var bestI = -1, bestD = reach, i, d;
     for (i = 0; i < 3; i++) {
       d = dist(p, px(item.place[i]));
       if (d < bestD) { bestD = d; bestI = i; }
     }
-    if (bestI < 0) return;
+    /* Snap rather than refuse. A press up to 3× the reach takes the
+       nearest dot — a screenless tablet cannot see its own hand, and a
+       silent `return` there reads as "the page is frozen". The grab offset
+       is kept, so the dot never teleports: press roughly, drag precisely. */
+    if (bestI < 0) {
+      bestD = 3 * reach;
+      for (i = 0; i < 3; i++) {
+        d = dist(p, px(item.place[i]));
+        if (d < bestD) { bestD = d; bestI = i; }
+      }
+      if (bestI < 0) {
+        hint.textContent = 'nothing to grab there — the three dots are numbered 1 · 2 · 3. ' +
+          'press near one (near counts) and drag it.';
+        return;
+      }
+    }
     dragPointer = ev.pointerId;
+    dragType = ev.pointerType;
     dragIdx = bestI;
     activeHandle = bestI;
     /* grab-offset: the dot stays put on grab and follows relative to
        where you took hold — no teleport under the finger */
     var hp = px(item.place[bestI]);
     dragOff = { x: hp.x - p.x, y: hp.y - p.y };
-    if (ev.pointerType === 'touch') item.touch = true;
     try { canvas.setPointerCapture(ev.pointerId); } catch (e) {}
     draw();
   });
@@ -496,10 +609,15 @@
   function endDrag(ev) {
     if (dragPointer === null || ev.pointerId !== dragPointer) return;
     dragPointer = null;
+    dragType = '';
     dragIdx = -1;
   }
   canvas.addEventListener('pointerup', endDrag);
   canvas.addEventListener('pointercancel', endDrag);
+  /* a pointerup lost outside the canvas used to freeze the box until
+     "new round", because pointerdown returns early while one is in flight */
+  window.addEventListener('pointerup', endDrag);
+  window.addEventListener('pointercancel', endDrag);
 
   canvas.addEventListener('keydown', function (ev) {
     var item = items[idx];
@@ -530,15 +648,15 @@
       var t = [px(item.box.Rb), px(item.box.Rt), px(item.box.Bt)];
       var p = item.place.map(px);
       var ds = [dist(p[0], t[0]), dist(p[1], t[1]), dist(p[2], t[2])];
-      var tol = item.touch ? ERR_TOL_TOUCH : ERR_TOL;
-      var s = itemScore(ds, dist(px(item.box.Fb), px(item.box.Lt)), tol);
+      var faceDiag = dist(px(item.box.Fb), px(item.box.Lt));
+      var s = itemScore(ds, faceDiag, tolFor(faceDiag));
       var wi = 0;
       if (ds[1] > ds[wi]) wi = 1;
       if (ds[2] > ds[wi]) wi = 2;
-      var worst = 'worst dot: ' + HANDLE_NAMES[wi] + ', ' + Math.round(ds[wi]) + 'px off';
+      var worst = 'furthest off: ' + HANDLE_NAMES[wi] + ', ' + Math.round(ds[wi]) + 'px';
       scores.push(s);
       item.phase = 'reveal';
-      if (idx === ITEMS_PER_ROUND - 1) {
+      if (idx === itemsThisRound - 1) {
         finishRound(worst);
       } else {
         btnDone.textContent = 'next ▸';
@@ -551,12 +669,11 @@
     idx += 1;
     activeHandle = 0;
     btnDone.textContent = 'done ✓';
-    hint.textContent = 'box ' + (idx + 1) + '/' + ITEMS_PER_ROUND + ' — ' +
+    hint.textContent = 'box ' + (idx + 1) + '/' + itemsThisRound + ' — ' +
       (idx === 2
-        ? (items[2].box.vpr.x <= 1
-          ? 'the right VP sits on the sheet now — watch the plunge. done when it reads true.'
-          : 'the right VP is pulled in close — watch the plunge. done when it reads true.')
-        : 'drag the 3 dots, then press done.');
+        ? 'this one is turned sharply away, so the right-hand side gets narrow fast. ' +
+          'done when it reads solid.'
+        : 'drag dots 1 · 2 · 3, then press done.');
     draw();
   }
 
@@ -614,6 +731,9 @@
   });
 
   ArtDaily.onTheme(draw);
+  /* the hardware can change mid-session (a laptop user plugs in a tablet);
+     the reach and the perfect zone follow it */
+  ArtDaily.onInput(draw);
   /* geometry is stored normalized, so a resize just rescales the sheet */
   window.addEventListener('resize', function () { fitCanvas(); draw(); });
 
