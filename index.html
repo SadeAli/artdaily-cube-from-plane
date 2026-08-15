@@ -51,18 +51,18 @@
       <div class="game-stage">
         <canvas class="game-canvas" id="gameCanvas" tabindex="0" role="img" aria-label="Cube From Plane drill area"></canvas>
         <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
-        <button class="btn btn-primary btn-done" id="btnDone" hidden>done ✓</button>
       </div>
 
       <div class="game-controls">
+        <button class="btn btn-primary" id="btnDone" hidden>done ✓</button>
         <button class="btn btn-primary" id="btnRound">new round <span aria-hidden="true">↻</span></button>
         <button class="btn" id="btnHow" aria-expanded="false" aria-controls="howTo">how to play</button>
       </div>
       <div class="howto" id="howTo" hidden>
         <p class="howto-cmd" aria-hidden="true"><span class="prompt">$</span> man cube-from-plane</p>
-        <p>One face of a box is drawn. Drag the 3 dots until all nine edges make a true two-point cube, then press done — 3 boxes per round, the vanishing points creep closer each box.</p>
-        <p>Scored on how close each dot lands to the true corner; the reveal draws the answer over yours so you can read the delta.</p>
-        <p>Studio tip: don't place corners — aim edges. Every edge runs to one of the two VPs or is dead vertical.</p>
+        <p>One square face of a real cube is drawn, projected through a real camera. Drag the 3 dots until all nine visible edges read as that cube, then press done — 3 boxes per round, the right vanishing point pulling in each box. The dots start plainly wrong on purpose: pressing done without moving them scores near zero.</p>
+        <p>Scored on how close each dot lands to the true corner (the perfect-zone is a little wider on touch screens, so fingers can hit 100 too); the reveal draws the answer over yours with its construction lines, so you can read the delta.</p>
+        <p>Studio tip: don't place corners — aim edges. Every edge runs to one of the two VPs or is dead vertical. And the face is a true square: its foreshortening secretly fixes both vanishing points, so everything you need is on the sheet.</p>
         <p>keys: 1/2/3 pick a dot, arrows nudge (shift = fine), enter = done.</p>
       </div>
 

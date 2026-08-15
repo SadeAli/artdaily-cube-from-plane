@@ -1,10 +1,15 @@
 /* ============================================================
    game.js — Cube From Plane. The sheet shows a horizon and ONE
-   vertical face of a two-point-perspective box. The player drags
-   three corner handles (far-bottom, far-top, top-back) until all
-   nine visible edges converge, presses done, and the true cube is
+   vertical face of a REAL cube seen through a REAL two-point
+   camera: makeCube projects an actual unit cube with a pinhole
+   model, and the 90° constraint ties the vanishing-point pair to
+   the focal length — so the square face secretly fixes BOTH VPs
+   and the truth is derivable from the sheet (the measuring-point
+   construction), never an arbitrary box. The player drags three
+   corner handles (far-bottom, far-top, top-back) until all nine
+   visible edges converge, presses done, and the true cube is
    revealed in the accent with its construction lines to the VPs.
-   Three boxes per round; the VPs pull closer each box.
+   Three boxes per round; the right VP pulls in each box.
    All scoring/geometry math is pure and lives up top.
    ============================================================ */
 (function () {
@@ -14,107 +19,203 @@
   var ITEMS_PER_ROUND = 3;
   var HANDLE_R = 11;    /* drawn radius */
   var HIT_R = 26;       /* grab radius → 52px touch target */
+  var ASPECT = 0.62;    /* canvas height / width — fitCanvas enforces it */
   /* Placement within 1.5% of the face diagonal counts as perfect, so a
-     careful hand can genuinely reach 100. Mean error of 30% scores 0. */
+     careful hand can genuinely reach 100. Fingers are wider than mouse
+     cursors and phones have no arrow keys, so touch rounds get a 3.5%
+     perfect-zone — 100 stays reachable by hand there too. Mean error
+     of 30% scores 0. */
   var ERR_TOL = 0.015;
+  var ERR_TOL_TOUCH = 0.035;
   var ERR_ZERO = 0.30;
 
   /* ================= pure math (unit-testable) =================
-     Points are {x, y}. Box geometry lives in normalized sheet space
-     (x, y in 0..1; VPs may fall outside) — the construction is
-     affine-invariant, so it stays a valid 2-VP box at any canvas
-     size. Scoring runs on pixel distances. */
+     Points are {x, y} in normalized sheet space (x, y in 0..1; VPs
+     may fall outside). The camera works in uniform units of sheet
+     WIDTH; y is divided by ASPECT on the way out, so the geometry
+     is exact at the canvas's fixed aspect and rescales cleanly.
+     Scoring runs on pixel distances. */
 
   function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
   function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
-  function lerpPt(p, q, t) { return { x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t }; }
 
-  /* y on the line p→vp at a given x (vp.x !== p.x by construction) */
-  function yAt(p, vp, x) { return p.y + (vp.y - p.y) * (x - p.x) / (vp.x - p.x); }
-
-  /* intersection of infinite lines a1–a2 and b1–b2 */
-  function lineHit(a1, a2, b1, b2) {
-    var d = (a1.x - a2.x) * (b1.y - b2.y) - (a1.y - a2.y) * (b1.x - b2.x);
-    if (Math.abs(d) < 1e-9) return lerpPt(a2, b2, 0.5); /* unreachable with distinct VPs */
-    var s = ((a1.x - b1.x) * (b1.y - b2.y) - (a1.y - b1.y) * (b1.x - b2.x)) / d;
-    return { x: a1.x + s * (a2.x - a1.x), y: a1.y + s * (a2.y - a1.y) };
+  /* '#rgb'/'#rrggbb' → [r,g,b], or null */
+  function hexRgb(s) {
+    var m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(s).trim());
+    if (!m) return null;
+    var h = m[1];
+    if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
   }
 
-  /* Build a 2-VP box from params: hy horizon y, vlx/vrx VP x, fx front
-     vertical edge x, fyb its bottom y, h its height, tL/tR fraction of
-     the way from the front corner to each VP. Verticals stay vertical.
-     Corners: F front, L far-left, R far-right, B back; b bottom, t top. */
-  function makeBox(p) {
-    var vpl = { x: p.vlx, y: p.hy };
-    var vpr = { x: p.vrx, y: p.hy };
-    var Fb = { x: p.fx, y: p.fyb };
-    var Ft = { x: p.fx, y: p.fyb - p.h };
-    var Lb = lerpPt(Fb, vpl, p.tL);
-    var Lt = { x: Lb.x, y: yAt(Ft, vpl, Lb.x) };
-    var Rb = lerpPt(Fb, vpr, p.tR);
-    var Rt = { x: Rb.x, y: yAt(Ft, vpr, Rb.x) };
-    var Bt = lineHit(Lt, vpr, Rt, vpl);
-    return { hy: p.hy, vpl: vpl, vpr: vpr, Fb: Fb, Ft: Ft, Lb: Lb, Lt: Lt, Rb: Rb, Rt: Rt, Bt: Bt };
+  /* t of a over (1−t) of b; falls back to b when a colour won't parse,
+     because b is always the AA-safe ink. */
+  function mixHex(a, b, t) {
+    var pa = hexRgb(a), pb = hexRgb(b);
+    if (!pa || !pb) return b;
+    var r = Math.round(pa[0] * t + pb[0] * (1 - t));
+    var g = Math.round(pa[1] * t + pb[1] * (1 - t));
+    var bl = Math.round(pa[2] * t + pb[2] * (1 - t));
+    return 'rgb(' + r + ',' + g + ',' + bl + ')';
   }
 
-  /* Random params for item i (0..2). The right VP pulls in hard on the
+  /* Project a TRUE cube through a real pinhole camera. cam:
+       hy   horizon (normalized y; the eye line, v0 = hy·ASPECT)
+       vlx/vrx  the two VP x positions (normalized; may be off-sheet)
+       u0   principal-point x (where the optical axis meets the sheet)
+       fx/fyb   front vertical edge: x and bottom y (normalized)
+       h    projected height of the front edge (normalized)
+     The two horizontal cube-edge directions are perpendicular, which
+     fixes the focal length from the VP pair: f² = (u0−vlx)(vrx−u0).
+     The cube's front edge sits at depth z=1 (projection is scale-
+     invariant), edge length s chosen so the front edge projects to h.
+     Verticals stay vertical because the view direction is horizontal.
+     Returns the corner set {hy,vpl,vpr,Fb,Ft,Lb,Lt,Rb,Rt,Bt}, or null
+     when the requested face cannot host an on-camera cube. */
+  function makeCube(cam) {
+    var v0 = cam.hy * ASPECT;
+    var f2 = (cam.u0 - cam.vlx) * (cam.vrx - cam.u0);
+    if (!(f2 > 0)) return null;
+    var f = Math.sqrt(f2);
+    var t = (cam.u0 - cam.vlx) / f;      /* tan of the cube's yaw */
+    var n = Math.sqrt(1 + t * t);
+    var sa = t / n, ca = 1 / n;          /* right dir (ca,0,sa), left dir (−sa,0,ca) */
+    var s = cam.h * ASPECT / f;          /* cube edge length, world units */
+    var xF = (cam.fx - cam.u0) / f;
+    var yb = (cam.fyb * ASPECT - v0) / f;
+    var yt = yb - s;
+    if (!(yt > 0)) return null;          /* cube would poke above eye level */
+    var zL = 1 + s * ca, zR = 1 + s * sa, zB = 1 + s * (ca + sa);
+    function pr(x, y, z) { return { x: cam.u0 + f * x / z, y: (v0 + f * y / z) / ASPECT }; }
+    return {
+      hy: cam.hy,
+      vpl: { x: cam.vlx, y: cam.hy },
+      vpr: { x: cam.vrx, y: cam.hy },
+      Fb: pr(xF, yb, 1), Ft: pr(xF, yt, 1),
+      Lb: pr(xF - s * sa, yb, zL), Lt: pr(xF - s * sa, yt, zL),
+      Rb: pr(xF + s * ca, yb, zR), Rt: pr(xF + s * ca, yt, zR),
+      Bt: pr(xF + s * (ca - sa), yt, zB),
+    };
+  }
+
+  /* Random camera for item i (0..2). The right VP pulls in hard on the
      last item, so foreshortening ramps within the round. rnd injected. */
-  function genParams(i, rnd) {
-    var hy = rnd(0.22, 0.32);
-    var fyb = rnd(0.82, 0.92);
-    var h = Math.min(rnd(0.34, 0.46), fyb - hy - 0.14);
-    var vlx, vrx, fx, tL, tR;
-    if (i === 0) {
-      vlx = rnd(-1.3, -0.8); vrx = rnd(1.8, 2.3);
-      fx = rnd(0.44, 0.56); tL = rnd(0.16, 0.24); tR = rnd(0.14, 0.22);
-    } else if (i === 1) {
-      vlx = rnd(-0.9, -0.5); vrx = rnd(1.35, 1.75);
-      fx = rnd(0.42, 0.56); tL = rnd(0.18, 0.26); tR = rnd(0.16, 0.24);
-    } else {
-      vlx = rnd(-1.8, -1.2); vrx = rnd(0.88, 1.05);
-      fx = rnd(0.34, 0.46); tL = rnd(0.13, 0.19); tR = rnd(0.30, 0.44);
+  function sampleCam(i, rnd) {
+    var hy = rnd(0.22, 0.30);
+    var fyb = rnd(0.84, 0.92);
+    var h = Math.min(rnd(0.38, 0.50), fyb - hy - 0.15);
+    var vlx, vrx, fx;
+    if (i === 0) { vlx = rnd(-1.3, -0.8); vrx = rnd(1.8, 2.3); fx = rnd(0.44, 0.56); }
+    else if (i === 1) { vlx = rnd(-0.9, -0.5); vrx = rnd(1.35, 1.75); fx = rnd(0.42, 0.56); }
+    else { vlx = rnd(-1.8, -1.2); vrx = rnd(0.88, 1.05); fx = rnd(0.34, 0.46); }
+    var u0 = rnd(Math.max(0.30, vlx + 0.35), Math.min(0.62, vrx - 0.28));
+    return { hy: hy, vlx: vlx, vrx: vrx, u0: u0, fx: fx, fyb: fyb, h: h };
+  }
+
+  /* every visible corner on-sheet with margin, back edge clear of the
+     horizon, left face wide enough to read as a square */
+  function cubeFits(b) {
+    var pts = [b.Fb, b.Ft, b.Lb, b.Lt, b.Rb, b.Rt, b.Bt], i, p;
+    for (i = 0; i < pts.length; i++) {
+      p = pts[i];
+      if (p.x < 0.05 || p.x > 0.95 || p.y < 0.04 || p.y > 0.97) return false;
     }
-    /* modest box: cap the depths so every corner stays on the sheet */
-    tL = Math.min(tL, (fx - 0.06) / (fx - vlx));
-    tR = Math.min(tR, (0.94 - fx) / (vrx - fx));
-    return { hy: hy, vlx: vlx, vrx: vrx, fx: fx, fyb: fyb, h: h, tL: tL, tR: tR };
+    if (b.Bt.y < b.hy + 0.04) return false;
+    if (b.Lb.x > b.Fb.x - 0.09) return false;
+    return true;
+  }
+
+  /* hand-verified safe cameras, one per item, for the rare case every
+     random sample rejects — keeps genCube total without loosening fits */
+  var FALLBACK_CAMS = [
+    { hy: 0.26, vlx: -1.0, vrx: 2.0, u0: 0.50, fx: 0.50, fyb: 0.88, h: 0.44 },
+    { hy: 0.26, vlx: -0.7, vrx: 1.55, u0: 0.52, fx: 0.48, fyb: 0.88, h: 0.44 },
+    { hy: 0.26, vlx: -1.5, vrx: 0.95, u0: 0.45, fx: 0.40, fyb: 0.88, h: 0.44 },
+  ];
+
+  function genCube(i, rnd) {
+    var tries, box;
+    for (tries = 0; tries < 40; tries++) {
+      box = makeCube(sampleCam(i, rnd));
+      if (box && cubeFits(box)) return box;
+    }
+    return makeCube(FALLBACK_CAMS[i]);
   }
 
   /* Spec: err_i = dist(placed, true) / faceDiagonal (with a small
-     perfect-zone); item = 100 · clamp(1 − mean(err)/0.30, 0, 1). */
-  function itemScore(dists, faceDiag) {
+     perfect-zone tol, wider on touch); item = 100 · clamp(1 −
+     mean(err)/0.30, 0, 1). */
+  function itemScore(dists, faceDiag, tol) {
     if (!dists.length || !(faceDiag > 0)) return 0; /* degenerate → worst, never NaN */
+    var t = tol == null ? ERR_TOL : tol;
     var sum = 0;
-    for (var i = 0; i < dists.length; i++) sum += Math.max(0, dists[i] / faceDiag - ERR_TOL);
+    for (var i = 0; i < dists.length; i++) {
+      var e = dists[i] / faceDiag;
+      if (!isFinite(e)) e = ERR_ZERO; /* unreadable distance counts as a full miss */
+      sum += Math.max(0, e - t);
+    }
     return 100 * clamp(1 - (sum / dists.length) / ERR_ZERO, 0, 1);
   }
 
   function roundScore(itemScores) {
     if (!itemScores.length) return 0;
     var sum = 0;
-    for (var i = 0; i < itemScores.length; i++) sum += itemScores[i];
-    return Math.round(sum / itemScores.length);
+    for (var i = 0; i < itemScores.length; i++) {
+      sum += isFinite(itemScores[i]) ? itemScores[i] : 0;
+    }
+    return Math.round(clamp(sum / itemScores.length, 0, 100));
   }
 
-  /* Ghost starts: plausible-but-wrong, 13–20% of the face diagonal off
-     the truth, kept on-sheet and un-crowded. Pixel space, rnd injected. */
+  /* How far a ghost start sits from the truth, as a fraction of the face
+     diagonal. GHOST_MIN is a floor the construction below *guarantees*,
+     and it is what makes "press done without touching anything" score
+     badly: three dots each GHOST_MIN off give 100·(1 − (0.25 − tol)/0.30)
+     — about 22 by mouse, 28 by finger. Zero effort can never beat 30. */
+  var GHOST_MIN = 0.25, GHOST_MAX = 0.33, GHOST_PUSH = 0.28;
+
+  /* Ghost starts: plausible-but-wrong, GHOST_MIN–GHOST_MAX of the face
+     diagonal off the truth, kept on-sheet and un-crowded. Pixel space,
+     rnd injected. Guaranteed never to hand out free points: if sampling
+     can't clear the truth (heavy clamping in a corner) the ghost is
+     pushed toward the sheet centre, which is the direction that always
+     has room, and if even that lands short it falls back to the farthest
+     sheet corner — which always clears the floor, since the face diagonal
+     is shorter than the sheet's. */
   function ghostSpots(truthPx, diagPx, w, hgt, rnd) {
-    var out = [], i, g, tries, a, m, j, crowded;
+    var out = [], i, g, tries, a, m, j, minSep, best, bestQ, cx, cy, cl, k, cor, cand;
+    var floor = GHOST_MIN * diagPx;
     for (i = 0; i < truthPx.length; i++) {
-      g = null;
+      best = null; bestQ = -Infinity;
       for (tries = 0; tries < 24; tries++) {
         a = rnd(0, Math.PI * 2);
-        m = rnd(0.13, 0.20) * diagPx;
+        m = rnd(GHOST_MIN, GHOST_MAX) * diagPx;
         g = {
           x: clamp(truthPx[i].x + Math.cos(a) * m, 16, w - 16),
           y: clamp(truthPx[i].y + Math.sin(a) * m, 16, hgt - 16),
         };
-        if (dist(g, truthPx[i]) < 0.08 * diagPx) continue; /* clamped too close to right */
-        crowded = false;
-        for (j = 0; j < out.length; j++) if (dist(g, out[j]) < 44) crowded = true;
-        if (!crowded) break;
+        /* negative when a spacing rule is violated */
+        minSep = dist(g, truthPx[i]) - floor;
+        for (j = 0; j < out.length; j++) minSep = Math.min(minSep, dist(g, out[j]) - 44);
+        if (minSep >= 0) { best = g; break; }      /* satisfies every rule */
+        if (minSep > bestQ) { bestQ = minSep; best = g; } /* else keep least-bad */
       }
-      out.push(g);
+      if (dist(best, truthPx[i]) < floor) {
+        cx = w / 2 - truthPx[i].x; cy = hgt / 2 - truthPx[i].y;
+        cl = Math.hypot(cx, cy);
+        if (!(cl > 1e-6)) { cx = 1; cy = 0; cl = 1; } /* dead centre: any way out will do */
+        best = {
+          x: clamp(truthPx[i].x + (cx / cl) * GHOST_PUSH * diagPx, 16, w - 16),
+          y: clamp(truthPx[i].y + (cy / cl) * GHOST_PUSH * diagPx, 16, hgt - 16),
+        };
+      }
+      if (dist(best, truthPx[i]) < floor) {
+        cor = [{ x: 16, y: 16 }, { x: w - 16, y: 16 }, { x: 16, y: hgt - 16 }, { x: w - 16, y: hgt - 16 }];
+        for (k = 0; k < cor.length; k++) {
+          cand = cor[k];
+          if (dist(cand, truthPx[i]) > dist(best, truthPx[i])) best = cand;
+        }
+      }
+      out.push(best);
     }
     return out;
   }
@@ -129,16 +230,25 @@
   var hudScore = document.getElementById('hudScore');
   var hudBest = document.getElementById('hudBest');
   var btnDone = document.getElementById('btnDone');
+  var btnRound = document.getElementById('btnRound');
 
   ArtDaily.init({ slug: SLUG });
+
+  /* surface the keyboard scheme only where a keyboard is plausible */
+  var KEYS_HINT = !!(window.matchMedia && window.matchMedia('(any-pointer: fine)').matches);
+  var HANDLE_NAMES = ['far-bottom', 'far-top', 'top-back'];
 
   /* ---- theme-aware inks (re-read on every repaint) ---- */
   function inks() {
     var cs = getComputedStyle(document.documentElement);
+    var ink = cs.getPropertyValue('--ink').trim();
+    var accent = cs.getPropertyValue('--game-accent').trim() || cs.getPropertyValue('--mint').trim();
     return {
-      ink: cs.getPropertyValue('--ink').trim(),
+      ink: ink,
       muted: cs.getPropertyValue('--muted').trim(),
-      accent: cs.getPropertyValue('--game-accent').trim() || cs.getPropertyValue('--mint').trim(),
+      accent: accent,
+      /* accent inked toward graphite — AA on both papers where raw accent isn't */
+      accentInk: mixHex(accent, ink, 0.55),
     };
   }
 
@@ -147,7 +257,7 @@
   function fitCanvas() {
     var rect = canvas.getBoundingClientRect();
     W = Math.max(1, Math.round(rect.width));
-    H = Math.round(W * 0.62);
+    H = Math.round(W * ASPECT);
     var dpr = window.devicePixelRatio || 1;
     canvas.width = Math.round(W * dpr);
     canvas.height = Math.round(H * dpr);
@@ -160,11 +270,12 @@
   /* ---- round state ---- */
   var round = 0, idx = 0, items = [], scores = [], roundOver = true;
   var activeHandle = 0;
+  var touchedAny = false; /* has this round any work worth protecting? */
 
   function rnd(lo, hi) { return lo + Math.random() * (hi - lo); }
 
   function newItem(i) {
-    var box = makeBox(genParams(i, rnd));
+    var box = genCube(i, rnd);
     var truthPx = [px(box.Rb), px(box.Rt), px(box.Bt)];
     var diagPx = dist(px(box.Fb), px(box.Lt));
     var ghosts = ghostSpots(truthPx, diagPx, W, H, rnd);
@@ -173,6 +284,7 @@
       /* handle order: 0 far-bottom (Rb), 1 far-top (Rt), 2 top-back (Bt) */
       place: ghosts.map(function (g) { return { x: g.x / W, y: g.y / H }; }),
       phase: 'edit',
+      touch: false, /* did a finger drag this box? → wider perfect-zone */
     };
   }
 
@@ -182,12 +294,23 @@
     scores = [];
     roundOver = false;
     activeHandle = 0;
+    touchedAny = false;
+    disarmRoundBtn();
+    /* kill any live drag so a stale pointer can't grab the new box */
+    if (dragPointer !== null) {
+      try { canvas.releasePointerCapture(dragPointer); } catch (e) {}
+    }
+    dragPointer = null;
+    dragIdx = -1;
     items = [newItem(0), newItem(1), newItem(2)];
     hudRound.textContent = String(round);
     hudScore.textContent = '–';
     btnDone.hidden = false;
     btnDone.textContent = 'done ✓';
-    hint.textContent = 'box 1/' + ITEMS_PER_ROUND + ' — drag the 3 dots until every edge converges, then press done.';
+    /* one primary CTA while a round is live: done */
+    btnRound.classList.remove('btn-primary');
+    hint.textContent = 'box 1/' + ITEMS_PER_ROUND +
+      ' — drag the 3 dots so every edge aims at its vanishing point on the eye line (both VPs sit past the sheet edges), then press done.';
     draw();
   }
 
@@ -231,12 +354,26 @@
       seg(tRb, vpr); seg(tRt, vpr);
       seg(tBt, vpr); seg(tBt, vpl);
       ctx.globalAlpha = 1;
+      /* VP marks: an × where a VP is on the sheet, a chevron at the
+         sheet edge (on the horizon) where it lies beyond */
       [vpl, vpr].forEach(function (v) {
-        if (v.x < 6 || v.x > W - 6) return;
-        ctx.strokeStyle = c.accent;
+        ctx.strokeStyle = c.accentInk;
+        ctx.fillStyle = c.accentInk;
         ctx.lineWidth = 1.5;
-        seg({ x: v.x - 5, y: v.y - 5 }, { x: v.x + 5, y: v.y + 5 });
-        seg({ x: v.x - 5, y: v.y + 5 }, { x: v.x + 5, y: v.y - 5 });
+        ctx.font = '10px ui-monospace, Menlo, Consolas, monospace';
+        if (v.x >= 6 && v.x <= W - 6) {
+          seg({ x: v.x - 5, y: v.y - 5 }, { x: v.x + 5, y: v.y + 5 });
+          seg({ x: v.x - 5, y: v.y + 5 }, { x: v.x + 5, y: v.y - 5 });
+          ctx.fillText('vp', v.x + 8, v.y + 13);
+        } else {
+          var right = v.x > W - 6;
+          var ex = right ? W - 8 : 8, dir = right ? 1 : -1;
+          seg({ x: ex - dir * 7, y: hyPx - 4 }, { x: ex, y: hyPx });
+          seg({ x: ex, y: hyPx }, { x: ex - dir * 7, y: hyPx + 4 });
+          ctx.textAlign = right ? 'right' : 'left';
+          ctx.fillText(right ? 'vp →' : '← vp', ex - dir * 10, hyPx + 13);
+          ctx.textAlign = 'left';
+        }
       });
     }
 
@@ -252,50 +389,62 @@
     ctx.lineWidth = 2;
     ctx.stroke();
 
-    /* the player's five edges (muted during reveal so the truth pops) */
-    ctx.strokeStyle = reveal ? c.muted : c.ink;
-    ctx.globalAlpha = reveal ? 0.7 : 0.85;
+    /* the player's five edges — tinted toward the accent during edit so
+       "yours" reads apart from the given face at a glance; muted during
+       reveal so the truth pops */
+    ctx.strokeStyle = reveal ? c.muted : c.accentInk;
+    ctx.globalAlpha = reveal ? 0.7 : 1;
     ctx.lineWidth = 2;
     seg(Fb, pRb); seg(Ft, pRt); seg(pRb, pRt); seg(Lt, pBt); seg(pRt, pBt);
     ctx.globalAlpha = 1;
 
     if (reveal) {
-      /* true cube in the accent + delta whiskers to the placed dots */
-      ctx.strokeStyle = c.accent;
+      /* true cube + delta whiskers to the placed dots. accentInk, not raw
+         accent: the answer is the one thing that must never be marginal,
+         and raw mint sits at ~2.9:1 on the paper card. */
+      ctx.strokeStyle = c.accentInk;
       ctx.lineWidth = 2.5;
       seg(Fb, tRb); seg(Ft, tRt); seg(tRb, tRt); seg(Lt, tBt); seg(tRt, tBt);
       ctx.lineWidth = 1;
       ctx.setLineDash([3, 4]);
       seg(pRb, tRb); seg(pRt, tRt); seg(pBt, tBt);
       ctx.setLineDash([]);
-      ctx.fillStyle = c.accent;
+      ctx.fillStyle = c.accentInk;
       [tRb, tRt, tBt].forEach(function (p) {
         ctx.beginPath(); ctx.arc(p.x, p.y, 3.5, 0, Math.PI * 2); ctx.fill();
       });
     } else {
+      /* handles: the fill is a decorative tint, the ring is the affordance,
+         so the ring gets the AA-safe ink on both papers */
       [pRb, pRt, pBt].forEach(function (p, i) {
         ctx.beginPath(); ctx.arc(p.x, p.y, HANDLE_R, 0, Math.PI * 2);
         ctx.fillStyle = c.accent;
         ctx.globalAlpha = 0.16;
         ctx.fill();
         ctx.globalAlpha = 1;
-        ctx.strokeStyle = c.accent;
+        ctx.strokeStyle = c.accentInk;
         ctx.lineWidth = 2;
         ctx.stroke();
         ctx.fillStyle = c.ink;
         ctx.beginPath(); ctx.arc(p.x, p.y, 2, 0, Math.PI * 2); ctx.fill();
         if (i === activeHandle) {
-          ctx.strokeStyle = c.accent;
+          ctx.strokeStyle = c.accentInk;
           ctx.globalAlpha = 0.5;
           ctx.lineWidth = 1;
           ctx.beginPath(); ctx.arc(p.x, p.y, HANDLE_R + 5, 0, Math.PI * 2); ctx.stroke();
           ctx.globalAlpha = 1;
         }
       });
+      if (KEYS_HINT) {
+        ctx.fillStyle = c.muted;
+        ctx.font = '10px ui-monospace, Menlo, Consolas, monospace';
+        ctx.fillText('keys: 1/2/3 pick a dot · arrows nudge · enter = done', 8, H - 8);
+      }
     }
   }
 
-  /* ---- input: drag handles (pointerId-guarded), keyboard nudges ---- */
+  /* ---- input: drag handles (pointerId-guarded, grab-offset so a
+     re-grab never warps your dot), keyboard nudges ---- */
   function pointerPos(ev) {
     var rect = canvas.getBoundingClientRect();
     return { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
@@ -305,15 +454,19 @@
     var item = items[idx];
     if (!item) return;
     item.place[i] = { x: clamp(p.x, 10, W - 10) / W, y: clamp(p.y, 10, H - 10) / H };
+    touchedAny = true;
     draw();
   }
 
-  var dragPointer = null, dragIdx = -1;
+  var dragPointer = null, dragIdx = -1, dragOff = { x: 0, y: 0 };
 
   canvas.addEventListener('pointerdown', function (ev) {
     var item = items[idx];
     if (roundOver || !item || item.phase !== 'edit' || dragPointer !== null) return;
     ev.preventDefault();
+    /* preventDefault suppresses click-to-focus; restore it so the
+       keyboard nudges work right after a grab */
+    try { canvas.focus({ preventScroll: true }); } catch (e) { canvas.focus(); }
     var p = pointerPos(ev);
     var bestI = -1, bestD = HIT_R, i, d;
     for (i = 0; i < 3; i++) {
@@ -324,14 +477,20 @@
     dragPointer = ev.pointerId;
     dragIdx = bestI;
     activeHandle = bestI;
+    /* grab-offset: the dot stays put on grab and follows relative to
+       where you took hold — no teleport under the finger */
+    var hp = px(item.place[bestI]);
+    dragOff = { x: hp.x - p.x, y: hp.y - p.y };
+    if (ev.pointerType === 'touch') item.touch = true;
     try { canvas.setPointerCapture(ev.pointerId); } catch (e) {}
-    moveHandle(bestI, p);
+    draw();
   });
 
   canvas.addEventListener('pointermove', function (ev) {
     if (dragPointer === null || ev.pointerId !== dragPointer) return;
     ev.preventDefault();
-    moveHandle(dragIdx, pointerPos(ev));
+    var p = pointerPos(ev);
+    moveHandle(dragIdx, { x: p.x + dragOff.x, y: p.y + dragOff.y });
   });
 
   function endDrag(ev) {
@@ -371,14 +530,20 @@
       var t = [px(item.box.Rb), px(item.box.Rt), px(item.box.Bt)];
       var p = item.place.map(px);
       var ds = [dist(p[0], t[0]), dist(p[1], t[1]), dist(p[2], t[2])];
-      var s = itemScore(ds, dist(px(item.box.Fb), px(item.box.Lt)));
+      var tol = item.touch ? ERR_TOL_TOUCH : ERR_TOL;
+      var s = itemScore(ds, dist(px(item.box.Fb), px(item.box.Lt)), tol);
+      var wi = 0;
+      if (ds[1] > ds[wi]) wi = 1;
+      if (ds[2] > ds[wi]) wi = 2;
+      var worst = 'worst dot: ' + HANDLE_NAMES[wi] + ', ' + Math.round(ds[wi]) + 'px off';
       scores.push(s);
       item.phase = 'reveal';
       if (idx === ITEMS_PER_ROUND - 1) {
-        finishRound();
+        finishRound(worst);
       } else {
         btnDone.textContent = 'next ▸';
-        hint.textContent = 'true cube in mint — this box: ' + Math.round(s) + '. press next.';
+        hint.textContent = 'true cube revealed — this box: ' + Math.round(s) + '. ' + worst + '. press next.';
+        showToast('box ' + (idx + 1) + ': ' + Math.round(s));
       }
       draw();
       return;
@@ -387,17 +552,23 @@
     activeHandle = 0;
     btnDone.textContent = 'done ✓';
     hint.textContent = 'box ' + (idx + 1) + '/' + ITEMS_PER_ROUND + ' — ' +
-      (idx === 2 ? 'one VP is close now, watch the plunge. done when it reads true.' : 'drag the 3 dots, then press done.');
+      (idx === 2
+        ? (items[2].box.vpr.x <= 1
+          ? 'the right VP sits on the sheet now — watch the plunge. done when it reads true.'
+          : 'the right VP is pulled in close — watch the plunge. done when it reads true.')
+        : 'drag the 3 dots, then press done.');
     draw();
   }
 
-  function finishRound() {
+  function finishRound(worstNote) {
     roundOver = true;
     btnDone.hidden = true;
+    btnRound.classList.add('btn-primary');
     var res = ArtDaily.report(roundScore(scores));
     hudScore.textContent = String(res.score);
     hudBest.textContent = res.best === null ? '–' : String(res.best);
-    hint.textContent = 'last box: ' + Math.round(scores[scores.length - 1]) + ' — round done, press “new round” to go again.';
+    hint.textContent = 'last box: ' + Math.round(scores[scores.length - 1]) + ' (' + worstNote +
+      ') — round done, press “new round” to go again.';
     showToast((res.isNewBest ? 'new best! ' : 'score ') + res.score + ' / 100', res.isNewBest);
   }
 
@@ -415,7 +586,25 @@
 
   /* ---- chrome wiring ---- */
   btnDone.addEventListener('click', onDone);
-  document.getElementById('btnRound').addEventListener('click', newRound);
+
+  /* "new round" arms first when it would throw away a live round — a
+     second press within the window confirms, otherwise it snaps back.
+     A mis-tap on a three-box round should never cost you the round. */
+  var roundArmTimer = null, roundArmed = false;
+  function disarmRoundBtn() {
+    roundArmed = false;
+    clearTimeout(roundArmTimer);
+    btnRound.innerHTML = 'new round <span aria-hidden="true">↻</span>';
+  }
+  btnRound.addEventListener('click', function () {
+    if (!roundOver && (touchedAny || idx > 0) && !roundArmed) {
+      roundArmed = true;
+      btnRound.textContent = 'discard round?';
+      roundArmTimer = setTimeout(disarmRoundBtn, 2600);
+      return;
+    }
+    newRound(); /* newRound disarms */
+  });
 
   var btnHow = document.getElementById('btnHow');
   var howTo = document.getElementById('howTo');
