@@ -386,6 +386,18 @@
   /* ---- painting (canvas bg stays clear so the CSS dot-grid shows) ---- */
   function seg(a, b) { ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); }
 
+  /* The full name where the sheet can hold it (both marks plus a
+     chevron and its gap), the old abbreviation on a sheet that cannot.
+     Measured, not guessed — a 10px mono glyph is not the same width on
+     every platform. */
+  function vpLabel() {
+    ctx.save();
+    ctx.font = '10px ui-monospace, Menlo, Consolas, monospace';
+    var w = ctx.measureText('vanishing point →').width;
+    ctx.restore();
+    return (w + 22 <= 0.5 * W) ? 'vanishing point' : 'vp';
+  }
+
   /* An × where a vanishing point is on the sheet, a chevron at the sheet
      edge (on the horizon) where it lies beyond. */
   function drawVpMark(c, v, hyPx, label) {
@@ -396,8 +408,20 @@
     if (v.x >= 6 && v.x <= W - 6) {
       seg({ x: v.x - 5, y: v.y - 5 }, { x: v.x + 5, y: v.y + 5 });
       seg({ x: v.x - 5, y: v.y + 5 }, { x: v.x + 5, y: v.y - 5 });
-      ctx.textAlign = 'left';
-      ctx.fillText(label, v.x + 8, v.y + 13);
+      /* An on-sheet VP is always the RIGHT one (vlx is negative by
+         construction), so a label pinned left of it at v.x + 8 runs off
+         the sheet the moment it is longer than "vp" — which is exactly
+         what naming the thing properly makes it. Flip to the other side
+         when it will not fit, and never let either end leave the sheet. */
+      var lw = ctx.measureText(label).width;
+      if (v.x + 8 + lw <= W - 4) {
+        ctx.textAlign = 'left';
+        ctx.fillText(label, v.x + 8, v.y + 13);
+      } else {
+        ctx.textAlign = 'right';
+        ctx.fillText(label, Math.max(Math.min(v.x - 8, W - 4), Math.min(lw + 4, W)), v.y + 13);
+      }
+      ctx.textAlign = 'left';   /* leave the context as the other branch does */
     } else {
       var right = v.x > W - 6;
       var ex = right ? W - 8 : 8, dir = right ? 1 : -1;
@@ -465,7 +489,13 @@
       seg(tRb, vpr); seg(tRt, vpr);
       seg(tBt, vpr); seg(tBt, vpl);
       ctx.globalAlpha = 1;
-      [vpl, vpr].forEach(function (v) { drawVpMark(c, v, hyPx, 'vp'); });
+      /* The edit screen teaches this with a picture and the words "these
+         edges aim here"; the reveal then marked the same idea "vp" — a
+         two-letter abbreviation of a term the drill never spells out
+         anywhere. Spell it, and fall back only when the sheet is too
+         narrow to hold it. */
+      var vpTag = vpLabel();
+      [vpl, vpr].forEach(function (v) { drawVpMark(c, v, hyPx, vpTag); });
     } else {
       /* Teach the vanishing point BEFORE the first done press, with a
          picture rather than a word: the two edges of the face you were
