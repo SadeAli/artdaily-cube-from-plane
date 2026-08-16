@@ -163,7 +163,19 @@
      mean(err)/0.30, 0, 1). */
   function itemScore(dists, faceDiag, tol) {
     if (!dists.length || !(faceDiag > 0)) return 0; /* degenerate → worst, never NaN */
-    var t = tol == null ? ERR_TOL : tol;
+    /* The distances were already guarded and the diagonal was already
+       guarded — the TOLERANCE was not, and it is the one argument that is
+       computed rather than measured. A non-finite tol makes `e - t` NaN,
+       NaN survives Math.max, and clamp() passes NaN straight through
+       (NaN < lo and NaN > hi are both false), so the whole item scored
+       NaN — which report() then files as a 0 the player did not earn. It
+       cannot happen through perfectZone() today, because ArtDaily.ease()
+       promises a finite positive number; this is the promise being kept
+       on this side of the boundary too, the same way the distances are.
+       A tolerance that cannot be read is no tolerance: fall back to the
+       pen standard rather than to a number that poisons the arithmetic. */
+    var t = (tol == null) ? ERR_TOL : Number(tol);
+    if (!(isFinite(t) && t >= 0)) t = ERR_TOL;
     var sum = 0;
     for (var i = 0; i < dists.length; i++) {
       var e = dists[i] / faceDiag;
