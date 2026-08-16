@@ -55,7 +55,7 @@
       </div>
 
       <div class="game-controls">
-        <button class="btn btn-primary" id="btnDone" hidden>done ✓</button>
+        <button class="btn btn-primary" id="btnDone" hidden>done <span aria-hidden="true">✓</span></button>
         <button class="btn btn-primary" id="btnRound">new round <span aria-hidden="true">↻</span></button>
         <button class="btn" id="btnHow" aria-expanded="false" aria-controls="howTo">how to play</button>
       </div>
@@ -63,7 +63,7 @@
         <p class="howto-cmd" aria-hidden="true"><span class="prompt">$</span> man cube-from-plane</p>
         <p>One square face of a real cube is drawn, projected through a real camera. Drag the 3 numbered dots until all nine visible edges read as that cube, then press done — 3 boxes per round (2 on your first ever round), the right-hand side turning further away each box. The dots start plainly wrong on purpose: pressing done without moving them scores near zero.</p>
         <p>The faint dashed lines running off the drawn face say <b>where its edges are heading</b>: follow any two edges that are parallel in real life far enough and they meet at one spot on your eye level. That spot is a <b>vanishing point</b>, and your three dots have to obey the other one. The reveal draws both.</p>
-        <p>Scored on how close each dot lands to the true corner. The perfect zone is set for the hardware you are on — the HUD says which (pen, mouse or trackpad, finger) — and it never falls below a few real pixels, so a small phone sheet is not judged more harshly than a desktop one. Press <i>near</i> a dot rather than exactly on it and it still picks it up. The reveal draws the answer over yours with its construction lines, so you can read the delta.</p>
+        <p>Scored on how close each dot lands to the true corner. The perfect zone is set for the hardware you are on — the HUD says which (pen, mouse or trackpad, finger) — and it never falls below a few real pixels, so a small phone sheet is not judged more harshly than a desktop one. Press <i>near</i> a dot rather than exactly on it and it still picks it up. The reveal draws the answer over yours with its construction lines, so you can read the delta, and names the dot that missed by most — how far off, and which way it sat from the true corner.</p>
         <p>Studio tip: don't place corners — aim edges. Every edge runs to one of the two vanishing points or is dead vertical. And the face is a true square: how much it is squashed by turning away (its <i>foreshortening</i>) secretly fixes both vanishing points, so everything you need is on the sheet.</p>
         <p>keys: 1/2/3 pick a dot, arrows nudge (shift = fine), enter = done.</p>
       </div>

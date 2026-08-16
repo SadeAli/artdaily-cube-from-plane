@@ -29,7 +29,9 @@ the sheet alone.
 `100 · clamp(1 − mean(err)/0.30, 0, 1)` with a perfect zone so 100 is
 reachable; the round is the mean of the boxes, reported 0–100. The reveal
 hint names the dot that landed furthest off, by the number printed beside
-it on the sheet.
+it on the sheet — how far off in px, and which way it sat from the true
+corner (`offsetWords`, pure), because a bare pixel count is not
+something a hand can act on.
 
 **The perfect zone is the hardware's, the ramp is yours.** `perfectZone()`
 takes 1.5% of the face diagonal as the pen standard, opens it with

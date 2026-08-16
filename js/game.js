@@ -242,6 +242,24 @@
     return out;
   }
 
+  /* WHICH WAY, not just how far. The reveal's one sentence said "furthest
+     off: dot 2 (far top), 37px" — a magnitude in a unit nobody has a feel
+     for, and nothing a hand can act on. The direction is what a beginner
+     needs and it costs one subtraction: the dot was above and left of
+     where it belonged, so next time it goes down and right. Pure: a screen
+     delta in, plain words out. The 3px dead zone keeps "left of" off a
+     placement that is, for reading purposes, dead on. */
+  function offsetWords(dx, dy) {
+    var out = [];
+    /* An unreadable delta says NOTHING rather than "right on top of it" —
+       a degenerate round must not be able to congratulate the player. */
+    if (!isFinite(dx) || !isFinite(dy)) return '';
+    if (Math.abs(dy) >= 3) out.push(dy < 0 ? 'above' : 'below');
+    if (Math.abs(dx) >= 3) out.push(dx < 0 ? 'left of' : 'right of');
+    if (!out.length) return 'right on top of the true corner';
+    return out.join(' and ') + ' the true corner';
+  }
+
   /* ================= canvas / DOM ================= */
 
   var canvas = document.getElementById('gameCanvas');
@@ -371,7 +389,7 @@
     hudRound.textContent = String(round);
     hudScore.textContent = '–';
     btnDone.hidden = false;
-    btnDone.textContent = 'done ✓';
+    setDoneLabel('done', '✓');
     /* one primary CTA while a round is live: done */
     btnRound.classList.remove('btn-primary');
     /* verbs, not nouns: "vanishing point" is what the reveal DRAWS, so the
@@ -381,6 +399,22 @@
       'off toward the same far-off point as the matching edge of the face already drawn. ' +
       'press near a dot and it still picks it up.';
     draw();
+  }
+
+  /* The glyph on the primary button is DECORATION. Writing "done ✓" and
+     "next ▸" straight into textContent made a screen reader announce the
+     first control of the drill as "done check mark" and then "next black
+     right-pointing small triangle" — the markup wraps every other glyph in
+     the drill (the ↻ on "new round") in aria-hidden for exactly this
+     reason, and the primary CTA, the one a beginner meets first, was the
+     one that did not. Same shape the sibling drills use. */
+  function setDoneLabel(txt, sym) {
+    btnDone.textContent = sym ? txt + ' ' : txt;
+    if (!sym) return;
+    var s = document.createElement('span');
+    s.setAttribute('aria-hidden', 'true');
+    s.textContent = sym;
+    btnDone.appendChild(s);
   }
 
   /* ---- painting (canvas bg stays clear so the CSS dot-grid shows) ---- */
@@ -720,13 +754,17 @@
       var wi = 0;
       if (ds[1] > ds[wi]) wi = 1;
       if (ds[2] > ds[wi]) wi = 2;
-      var worst = 'furthest off: ' + HANDLE_NAMES[wi] + ', ' + Math.round(ds[wi]) + 'px';
+      var dpx = isFinite(ds[wi]) ? Math.round(ds[wi]) : null;
+      var way = offsetWords(p[wi].x - t[wi].x, p[wi].y - t[wi].y);
+      var worst = 'furthest off: ' + HANDLE_NAMES[wi] +
+        (dpx === null ? '' : ' — ' + dpx + 'px') +
+        (way ? (dpx === null ? ' — ' : ', ') + way : '');
       scores.push(s);
       item.phase = 'reveal';
       if (idx === itemsThisRound - 1) {
         finishRound(worst);
       } else {
-        btnDone.textContent = 'next ▸';
+        setDoneLabel('next', '▸');
         hint.textContent = 'true cube revealed — this box: ' + Math.round(s) + '. ' + worst + '. press next.';
         showToast('box ' + (idx + 1) + ': ' + Math.round(s));
       }
@@ -735,7 +773,7 @@
     }
     idx += 1;
     activeHandle = 0;
-    btnDone.textContent = 'done ✓';
+    setDoneLabel('done', '✓');
     hint.textContent = 'box ' + (idx + 1) + '/' + itemsThisRound + ' — ' +
       (idx === 2
         ? 'this one is turned sharply away, so the right-hand side gets narrow fast. ' +
